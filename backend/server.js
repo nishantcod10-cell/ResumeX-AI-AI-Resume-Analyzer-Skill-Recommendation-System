@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 5000;
 
 // CORS Configuration
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:5173',
+  process.env.FRONTEND_URL || 'https://resume-x-ai-ai-resume-analyzer-skil.vercel.app/',
   'http://localhost:5173',
   'http://localhost:5174'
 ].filter(Boolean);

@@ -8,8 +8,19 @@ const getGenAI = () => {
   return new GoogleGenAI({ apiKey: apiKey.trim() });
 };
 
-const getModelName = () => {
-  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const getModelNames = () => {
+  const envModel = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : "";
+  const standardModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash"];
+  
+  // If env model is specified and not in list, try it first, then fallbacks
+  const list = [];
+  if (envModel && !envModel.includes("2.5") && !envModel.includes("2.0") && !envModel.includes("1.5")) {
+    list.push(envModel);
+  }
+  list.push(...standardModels);
+  
+  // Deduplicate
+  return [...new Set(list)];
 };
 
 /**
@@ -18,7 +29,7 @@ const getModelName = () => {
 const analyzeResumeWithAI = async (resumeText, targetRole) => {
   try {
     const ai = getGenAI();
-    const modelName = getModelName();
+    const modelNames = getModelNames();
 
     const prompt = `
       You are an expert AI Resume Analyzer and Career Coach.
@@ -62,34 +73,37 @@ const analyzeResumeWithAI = async (resumeText, targetRole) => {
     `;
 
     let response;
-    try {
-      response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
-    } catch (apiError) {
-      console.error(`Gemini API Error with model "${modelName}":`, apiError);
-      
-      const errMsg = apiError.message || "";
-      if (
-        apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
-        apiError.status === 401 ||
-        errMsg.includes("401") ||
-        errMsg.includes("API key not valid") ||
-        errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
-      ) {
-        throw new Error("Invalid or unauthorized Gemini API key. Please check that GEMINI_API_KEY in your environment configuration is correct and active.");
+    let lastError;
+
+    for (const modelName of modelNames) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+          },
+        });
+        if (response) break;
+      } catch (apiError) {
+        lastError = apiError;
+        console.warn(`Gemini model "${modelName}" failed:`, apiError.message);
+        
+        const errMsg = apiError.message || "";
+        if (
+          apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
+          apiError.status === 401 ||
+          errMsg.includes("401") ||
+          errMsg.includes("API key not valid") ||
+          errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
+        ) {
+          throw new Error("Invalid or unauthorized Gemini API key. Please check that GEMINI_API_KEY in your environment configuration is correct and active.");
+        }
       }
-      if (apiError.status === 429 || errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
-        throw new Error("Gemini API quota exceeded or rate limit reached. Please wait a moment and try again.");
-      }
-      if (apiError.status === 404 || errMsg.includes("not found")) {
-        throw new Error(`Gemini model "${modelName}" was not found. Please verify GEMINI_MODEL in your environment variables.`);
-      }
-      throw new Error(apiError.message || "Failed to communicate with Gemini AI API.");
+    }
+
+    if (!response) {
+      throw lastError || new Error("Failed to communicate with Gemini AI API.");
     }
 
     const responseText = typeof response.text === "function" 
@@ -141,7 +155,7 @@ const analyzeResumeWithAI = async (resumeText, targetRole) => {
 const chatWithAI = async (systemPrompt, conversationHistory, userMessage) => {
   try {
     const ai = getGenAI();
-    const modelName = getModelName();
+    const modelNames = getModelNames();
 
     let fullPrompt = systemPrompt + "\n\n";
 
@@ -173,31 +187,37 @@ IMPORTANT:
 - Make your answer detailed, actionable, and well-organized.`;
 
     let response;
-    try {
-      response = await ai.models.generateContent({
-        model: modelName,
-        contents: fullPrompt,
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
-    } catch (apiError) {
-      console.error(`Gemini Chat API Error with model "${modelName}":`, apiError);
+    let lastError;
 
-      const errMsg = apiError.message || "";
-      if (
-        apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
-        apiError.status === 401 ||
-        errMsg.includes("401") ||
-        errMsg.includes("API key not valid") ||
-        errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
-      ) {
-        throw new Error("Invalid or unauthorized Gemini API key. Please check your GEMINI_API_KEY in environment variables.");
+    for (const modelName of modelNames) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: fullPrompt,
+          config: {
+            responseMimeType: "application/json",
+          },
+        });
+        if (response) break;
+      } catch (apiError) {
+        lastError = apiError;
+        console.warn(`Gemini chat model "${modelName}" failed:`, apiError.message);
+
+        const errMsg = apiError.message || "";
+        if (
+          apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
+          apiError.status === 401 ||
+          errMsg.includes("401") ||
+          errMsg.includes("API key not valid") ||
+          errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
+        ) {
+          throw new Error("Invalid or unauthorized Gemini API key. Please check your GEMINI_API_KEY in environment variables.");
+        }
       }
-      if (apiError.status === 429 || errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
-        throw new Error("Gemini API quota exceeded. Please wait a moment before sending another message.");
-      }
-      throw new Error(apiError.message || "Failed to communicate with Gemini AI.");
+    }
+
+    if (!response) {
+      throw lastError || new Error("Failed to communicate with Gemini AI.");
     }
 
     const responseText = typeof response.text === "function" 

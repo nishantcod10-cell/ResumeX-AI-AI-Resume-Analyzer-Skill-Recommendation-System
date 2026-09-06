@@ -1,180 +1,239 @@
 const { GoogleGenAI } = require("@google/genai");
 
-const getModelNames = () => {
-  const primary = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash"];
-
-  const seen = new Set();
-
-  return [primary, ...fallbacks].filter((name) => {
-    if (seen.has(name)) return false;
-    seen.add(name);
-    return true;
-  });
-};
-
 const getGenAI = () => {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is missing in environment variables.");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey.trim() === "" || apiKey === "your_gemini_api_key_here" || apiKey === "your_gemini_api_key") {
+    throw new Error("GEMINI_API_KEY is missing or unconfigured. Please set a valid Gemini API key in your environment variables.");
   }
-
-  return new GoogleGenAI({
-    apiKey
-  });
+  return new GoogleGenAI({ apiKey: apiKey.trim() });
 };
 
-const generateJSON = async (prompt, modelName) => {
-  const ai = getGenAI();
-
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json"
-    }
-  });
-
-  return response.text;
+const getModelName = () => {
+  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
 };
 
+/**
+ * Analyze resume text against a target role using Google GenAI SDK
+ */
 const analyzeResumeWithAI = async (resumeText, targetRole) => {
-  const prompt = `
-You are an expert AI Resume Analyzer and Career Coach.
+  try {
+    const ai = getGenAI();
+    const modelName = getModelName();
 
-Analyze the following resume against the target role:
-"${targetRole}"
+    const prompt = `
+      You are an expert AI Resume Analyzer and Career Coach.
+      Analyze the following resume text against the target role of "${targetRole}".
 
-Resume:
-"""
-${resumeText}
-"""
+      Resume Text:
+      """
+      ${resumeText}
+      """
 
-Return ONLY valid JSON using this exact structure:
-
-{
-  "resumeScore": 0,
-  "atsScore": 0,
-  "extractedSkills": [],
-  "missingSkills": [],
-  "strengths": [],
-  "weaknesses": [],
-  "improvementSuggestions": [],
-  "recommendedTechnologies": [],
-  "recommendedCourses": [],
-  "careerRoadmap": [
-    { "week": "Week 1", "task": "" },
-    { "week": "Week 2", "task": "" },
-    { "week": "Week 3", "task": "" },
-    { "week": "Week 4", "task": "" },
-    { "week": "Week 5", "task": "" },
-    { "week": "Week 6", "task": "" }
-  ],
-  "projectRecommendations": [
-    { "name": "", "description": "" }
-  ],
-  "summary": ""
-}
-
-Rules:
-- resumeScore must be 0-100.
-- atsScore must be 0-100.
-- Return only JSON.
-- No markdown.
-- No explanation outside JSON.
-`;
-
-  let lastError;
-
-  for (const modelName of getModelNames()) {
-    try {
-      const responseText = await generateJSON(prompt, modelName);
-
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-
-      if (!jsonMatch) {
-        throw new Error("AI did not return valid JSON.");
+      You must respond ONLY with a valid JSON object following this EXACT structure:
+      {
+        "resumeScore": 0,
+        "atsScore": 0,
+        "extractedSkills": ["skill1", "skill2"],
+        "missingSkills": ["skill1", "skill2"],
+        "strengths": ["strength1", "strength2"],
+        "weaknesses": ["weakness1", "weakness2"],
+        "improvementSuggestions": ["suggestion1", "suggestion2"],
+        "recommendedTechnologies": ["tech1", "tech2"],
+        "recommendedCourses": ["course1", "course2"],
+        "careerRoadmap": [
+          { "week": "Week 1", "task": "description of task" },
+          { "week": "Week 2", "task": "description of task" },
+          { "week": "Week 3", "task": "description of task" },
+          { "week": "Week 4", "task": "description of task" },
+          { "week": "Week 5", "task": "description of task" },
+          { "week": "Week 6", "task": "description of task" }
+        ],
+        "projectRecommendations": [
+          { "name": "Project Name", "description": "Brief description of the project" }
+        ],
+        "summary": "Overall summary of the resume"
       }
 
-      return JSON.parse(jsonMatch[0]);
-    } catch (error) {
-      lastError = error;
-      console.error(`Gemini model failed: ${modelName}`, error.message);
-    }
-  }
+      Important rules:
+      - resumeScore and atsScore must be numbers between 0 and 100.
+      - Do not wrap the response in markdown code blocks like \`\`\`json or \`\`\`.
+      - Do not add explanation text outside the JSON.
+      - Return only valid, parseable JSON.
+    `;
 
-  throw lastError || new Error("All Gemini models failed.");
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
+    } catch (apiError) {
+      console.error(`Gemini API Error with model "${modelName}":`, apiError);
+      
+      const errMsg = apiError.message || "";
+      if (
+        apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
+        apiError.status === 401 ||
+        errMsg.includes("401") ||
+        errMsg.includes("API key not valid") ||
+        errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
+      ) {
+        throw new Error("Invalid or unauthorized Gemini API key. Please check that GEMINI_API_KEY in your environment configuration is correct and active.");
+      }
+      if (apiError.status === 429 || errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
+        throw new Error("Gemini API quota exceeded or rate limit reached. Please wait a moment and try again.");
+      }
+      if (apiError.status === 404 || errMsg.includes("not found")) {
+        throw new Error(`Gemini model "${modelName}" was not found. Please verify GEMINI_MODEL in your environment variables.`);
+      }
+      throw new Error(apiError.message || "Failed to communicate with Gemini AI API.");
+    }
+
+    const responseText = typeof response.text === "function" 
+      ? response.text() 
+      : (response.text || response.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "");
+
+    if (!responseText || responseText.trim() === "") {
+      throw new Error("Gemini AI returned an empty response. Please try again.");
+    }
+
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("AI did not return a valid JSON format.");
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.error("JSON parse error from Gemini response:", responseText);
+      throw new Error("Failed to parse AI analysis response. Please try again.");
+    }
+
+    // Sanitize and ensure consistent data structure
+    return {
+      resumeScore: typeof parsed.resumeScore === "number" ? Math.min(100, Math.max(0, parsed.resumeScore)) : 0,
+      atsScore: typeof parsed.atsScore === "number" ? Math.min(100, Math.max(0, parsed.atsScore)) : 0,
+      extractedSkills: Array.isArray(parsed.extractedSkills) ? parsed.extractedSkills : [],
+      missingSkills: Array.isArray(parsed.missingSkills) ? parsed.missingSkills : [],
+      strengths: Array.isArray(parsed.strengths) ? parsed.strengths : [],
+      weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses : [],
+      improvementSuggestions: Array.isArray(parsed.improvementSuggestions) ? parsed.improvementSuggestions : [],
+      recommendedTechnologies: Array.isArray(parsed.recommendedTechnologies) ? parsed.recommendedTechnologies : [],
+      recommendedCourses: Array.isArray(parsed.recommendedCourses) ? parsed.recommendedCourses : [],
+      careerRoadmap: Array.isArray(parsed.careerRoadmap) ? parsed.careerRoadmap : [],
+      projectRecommendations: Array.isArray(parsed.projectRecommendations) ? parsed.projectRecommendations : [],
+      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    };
+
+  } catch (error) {
+    console.error("Analysis Process Error:", error);
+    throw error;
+  }
 };
 
-const chatWithAI = async (
-  systemPrompt,
-  conversationHistory,
-  userMessage
-) => {
-  const fullPrompt = `
-${systemPrompt}
+/**
+ * Chat with AI using conversation context and full resume background
+ */
+const chatWithAI = async (systemPrompt, conversationHistory, userMessage) => {
+  try {
+    const ai = getGenAI();
+    const modelName = getModelName();
 
-=== CONVERSATION HISTORY ===
-${(conversationHistory || [])
-  .slice(-10)
-  .map(
-    (msg) =>
-      `${msg.role === "user" ? "USER" : "ASSISTANT"}: ${msg.content}`
-  )
-  .join("\n\n")}
+    let fullPrompt = systemPrompt + "\n\n";
 
-=== USER QUESTION ===
-${userMessage}
+    if (conversationHistory && conversationHistory.length > 0) {
+      fullPrompt += "=== CONVERSATION HISTORY ===\n";
+      const recentHistory = conversationHistory.slice(-10);
+      for (const msg of recentHistory) {
+        const role = msg.role === "user" ? "USER" : "ASSISTANT";
+        fullPrompt += `${role}: ${msg.content}\n\n`;
+      }
+      fullPrompt += "=== END CONVERSATION HISTORY ===\n\n";
+    }
 
-Return ONLY valid JSON:
-
+    fullPrompt += `USER'S CURRENT QUESTION: ${userMessage}\n\n`;
+    fullPrompt += `You must respond ONLY with a valid JSON object following this exact structure:
 {
-  "answer": "",
+  "answer": "Your detailed, well-structured answer here. Use **bold** for emphasis, bullet points with - for lists, and \\n for line breaks.",
   "suggestedQuestions": [
-    "",
-    "",
-    ""
+    "Relevant follow-up question 1",
+    "Relevant follow-up question 2",
+    "Relevant follow-up question 3"
   ]
 }
-`;
 
-  let lastError;
+IMPORTANT:
+- Return ONLY valid JSON, no markdown code blocks, no extra text.
+- The "answer" field should contain your complete response as a string.
+- The "suggestedQuestions" should be 3 contextually relevant follow-up questions.
+- Make your answer detailed, actionable, and well-organized.`;
 
-  for (const modelName of getModelNames()) {
+    let response;
     try {
-      const responseText = await generateJSON(fullPrompt, modelName);
+      response = await ai.models.generateContent({
+        model: modelName,
+        contents: fullPrompt,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
+    } catch (apiError) {
+      console.error(`Gemini Chat API Error with model "${modelName}":`, apiError);
 
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-
-      if (!jsonMatch) {
-        throw new Error("AI did not return valid JSON.");
+      const errMsg = apiError.message || "";
+      if (
+        apiError.status === 400 && errMsg.includes("API_KEY_INVALID") ||
+        apiError.status === 401 ||
+        errMsg.includes("401") ||
+        errMsg.includes("API key not valid") ||
+        errMsg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED")
+      ) {
+        throw new Error("Invalid or unauthorized Gemini API key. Please check your GEMINI_API_KEY in environment variables.");
       }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      return {
-        answer:
-          parsed.answer ||
-          "I could not generate a response. Please try again.",
-        suggestedQuestions: Array.isArray(parsed.suggestedQuestions)
-          ? parsed.suggestedQuestions.slice(0, 3)
-          : [
-              "What are my biggest strengths?",
-              "How can I improve my ATS score?",
-              "What skills should I learn next?"
-            ]
-      };
-    } catch (error) {
-      lastError = error;
-      console.error(`Chat model failed: ${modelName}`, error.message);
+      if (apiError.status === 429 || errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
+        throw new Error("Gemini API quota exceeded. Please wait a moment before sending another message.");
+      }
+      throw new Error(apiError.message || "Failed to communicate with Gemini AI.");
     }
+
+    const responseText = typeof response.text === "function" 
+      ? response.text() 
+      : (response.text || response.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "");
+
+    if (!responseText || responseText.trim() === "") {
+      throw new Error("Gemini AI returned an empty response.");
+    }
+
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("AI did not return a valid JSON format.");
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.error("JSON parse error from Gemini chat response:", responseText);
+      throw new Error("Failed to parse AI response. Please try asking again.");
+    }
+
+    return {
+      answer: parsed.answer || "I apologize, but I could not generate a proper response. Please try asking your question again.",
+      suggestedQuestions: Array.isArray(parsed.suggestedQuestions) ? parsed.suggestedQuestions.slice(0, 3) : [
+        "What are my biggest strengths?",
+        "How can I improve my ATS score?",
+        "What skills should I learn next?"
+      ],
+    };
+
+  } catch (error) {
+    console.error("Chat Process Error:", error);
+    throw error;
   }
-
-  throw lastError || new Error("All Gemini models failed.");
 };
 
-module.exports = {
-  analyzeResumeWithAI,
-  chatWithAI
-};
+module.exports = { analyzeResumeWithAI, chatWithAI };
